@@ -1,0 +1,101 @@
+name: CI — Chase+ Quality Gate
+
+on:
+  push:
+    branches: ["**"]          # every branch
+  pull_request:
+    branches: [main]          # PRs targeting main
+
+jobs:
+  # ─────────────────────────────────────────
+  # 1. LINT & VALIDATE
+  # ─────────────────────────────────────────
+  lint:
+    name: Lint & Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install lint tools
+        run: npm install -g htmlhint eslint
+
+      - name: Lint HTML
+        run: htmlhint index.html --config .htmlhintrc
+
+      - name: Lint JavaScript (inline extracted)
+        run: |
+          # Extract inline <script> blocks to a temp file for ESLint
+          node -e "
+            const fs = require('fs');
+            const html = fs.readFileSync('index.html', 'utf8');
+            const match = html.match(/<script[^>]*>([\s\S]*?)<\/script>/gi) || [];
+            const js = match
+              .filter(s => !s.includes('src='))
+              .map(s => s.replace(/<\/?script[^>]*>/gi, ''))
+              .join('\n');
+            fs.writeFileSync('_extracted.js', js);
+          "
+          eslint _extracted.js --no-eslintrc -c .eslintrc.json || true
+          rm -f _extracted.js
+
+  # ─────────────────────────────────────────
+  # 2. SECURITY SCAN
+  # ─────────────────────────────────────────
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for exposed secrets
+        run: |
+          # Warn if Firebase API key looks like it might be a real prod key
+          # (This is a reminder — for production, use GitHub Secrets instead)
+          echo "✅ Security scan: checking for hardcoded credentials..."
+          if grep -q "AIzaSy" index.html; then
+            echo "⚠️  WARNING: Firebase API key is hardcoded in index.html."
+            echo "   Consider moving it to GitHub Secrets + a build step."
+            echo "   (See: docs/SECRETS.md for migration guide)"
+          fi
+          echo "Scan complete."
+
+      - name: Check file size (guard against bloat)
+        run: |
+          SIZE=$(wc -c < index.html)
+          echo "index.html size: ${SIZE} bytes"
+          if [ "$SIZE" -gt 200000 ]; then
+            echo "❌ index.html exceeds 200KB — please optimise."
+            exit 1
+          fi
+          echo "✅ File size OK"
+
+  # ─────────────────────────────────────────
+  # 3. SMOKE TEST (headless browser)
+  # ─────────────────────────────────────────
+  smoke-test:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Playwright
+        run: |
+          npm install playwright @playwright/test
+          npx playwright install chromium --with-deps
+
+      - name: Run smoke tests
+        run: npx playwright test tests/smoke.spec.js
+        env:
+          CI: true

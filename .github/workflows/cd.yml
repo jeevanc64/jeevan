@@ -1,0 +1,93 @@
+name: CD — Chase+ Deploy
+
+on:
+  push:
+    branches: [main]              # Production deploy
+  pull_request:
+    branches: [main]              # Preview deploy on every PR
+
+jobs:
+  # ─────────────────────────────────────────
+  # PREVIEW DEPLOY (every Pull Request)
+  # ─────────────────────────────────────────
+  deploy-preview:
+    name: Deploy Preview to Vercel
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    environment: preview
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Deploy Preview
+        id: deploy
+        run: |
+          DEPLOY_URL=$(vercel --token=${{ secrets.VERCEL_TOKEN }} \
+            --yes \
+            --env FIREBASE_API_KEY=${{ secrets.FIREBASE_API_KEY }} \
+            --env FIREBASE_PROJECT_ID=${{ secrets.FIREBASE_PROJECT_ID }} \
+            2>&1 | tail -1)
+          echo "preview_url=$DEPLOY_URL" >> $GITHUB_OUTPUT
+          echo "✅ Preview deployed: $DEPLOY_URL"
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Comment preview URL on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🚀 Chase+ Preview Deployed!\n\n**URL:** ${{ steps.deploy.outputs.preview_url }}\n\n_This preview will be updated on every new commit to this PR._`
+            })
+
+  # ─────────────────────────────────────────
+  # PRODUCTION DEPLOY (merge to main only)
+  # ─────────────────────────────────────────
+  deploy-production:
+    name: Deploy Production to Vercel
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Deploy to Production
+        run: |
+          vercel --token=${{ secrets.VERCEL_TOKEN }} \
+            --prod \
+            --yes \
+            --env FIREBASE_API_KEY=${{ secrets.FIREBASE_API_KEY }} \
+            --env FIREBASE_PROJECT_ID=${{ secrets.FIREBASE_PROJECT_ID }}
+          echo "✅ Production deploy complete!"
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Production deploy FAILED on commit ${{ github.sha }}"
+          echo "Branch: ${{ github.ref }}"
+          echo "Pushed by: ${{ github.actor }}"
+          # Add webhook/Slack/email notification here if needed
